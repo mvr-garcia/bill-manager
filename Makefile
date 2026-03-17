@@ -17,6 +17,7 @@ help:
 	@echo "  db-down          Stop PostgreSQL (docker-compose down)"
 	@echo "  env              Copy .env.example to .env (if missing)"
 	@echo "  run              Run the API server (go run cmd/api/main.go)"
+	@echo "  test             Run unit/integration tests (starts docker-compose services)"
 	@echo "  health           Call the health check endpoint"
 	@echo "  create-bill      Create a bill via curl (requires JWT_TOKEN)"
 	@echo "  list-bills       List bills via curl (requires JWT_TOKEN)"
@@ -52,6 +53,17 @@ env:
 run:
 	@echo "Running API server on http://localhost:8080 (or $${SERVER_PORT:-8080})"
 	@go run cmd/api/main.go
+
+# Run tests (starts docker-compose services first)
+
+test: db-up
+	@echo "Starting docker-compose services for tests..."
+	@set -e; \
+	ret=0; \
+	go test ./... || ret=$$?; \
+	@echo "Stopping docker-compose services..."; \
+	$(MAKE) db-down; \
+	exit $$ret
 
 # Health check
 
