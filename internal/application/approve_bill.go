@@ -34,62 +34,48 @@ func NewApproveBillUseCase(uow domain.UnitOfWork) *ApproveBillUseCase {
 
 // Execute approves a bill and logs the approval in the audit table.
 func (uc *ApproveBillUseCase) Execute(ctx context.Context, req *ApproveBillRequest, approverID uuid.UUID, ipAddress, userAgent string) (*ApproveBillResponse, error) {
-	// Start a transaction
-	if err := uc.uow.Begin(ctx); err != nil {
-		return nil, err
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			_ = uc.uow.Rollback(ctx)
-			panic(r)
+	var resp *ApproveBillResponse
+
+	err := uc.uow.Execute(func(uow domain.UnitOfWork) error {
+		// Retrieve the bill
+		billRepo := uow.BillRepository()
+		bill, err := billRepo.GetByID(ctx, req.BillID)
+		if err != nil {
+			return err
 		}
-	}()
 
-	// Retrieve the bill
-	billRepo := uc.uow.BillRepository()
-	bill, err := billRepo.GetByID(ctx, req.BillID)
-	if err != nil {
-		_ = uc.uow.Rollback(ctx)
-		return nil, err
-	}
+		if bill == nil {
+			return errors.New("bill not found")
+		}
 
-	if bill == nil {
-		_ = uc.uow.Rollback(ctx)
-		return nil, errors.New("bill not found")
-	}
+		// Check if the bill is already approved
+		if bill.Status != domain.BillStatusPending {
+			return errors.New("only pending bills can be approved")
+		}
 
-	// Check if the bill is already approved
-	if bill.Status != domain.BillStatusPending {
-		_ = uc.uow.Rollback(ctx)
-		return nil, errors.New("only pending bills can be approved")
-	}
+		// Approve the bill
+		bill.Approve(approverID)
 
-	// Approve the bill
-	bill.Approve(approverID)
+		// Update the bill
+		if err := billRepo.Update(ctx, bill); err != nil {
+			return err
+		}
 
-	// Update the bill
-	if err := billRepo.Update(ctx, bill); err != nil {
-		_ = uc.uow.Rollback(ctx)
-		return nil, err
-	}
+		// Create and persist the audit log
+		audit := domain.NewBillAudit(bill.ID, domain.AuditActionApproved, approverID, ipAddress, userAgent)
+		auditRepo := uow.BillAuditRepository()
+		if err := auditRepo.Create(ctx, audit); err != nil {
+			return err
+		}
 
-	// Create and persist the audit log
-	audit := domain.NewBillAudit(bill.ID, domain.AuditActionApproved, approverID, ipAddress, userAgent)
-	auditRepo := uc.uow.BillAuditRepository()
-	if err := auditRepo.Create(ctx, audit); err != nil {
-		_ = uc.uow.Rollback(ctx)
-		return nil, err
-	}
+		resp = &ApproveBillResponse{
+			ID:         bill.ID,
+			Status:     string(bill.Status),
+			ApprovedBy: approverID,
+			UpdatedAt:  bill.UpdatedAt,
+		}
+		return nil
+	})
 
-	// Commit the transaction
-	if err := uc.uow.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	return &ApproveBillResponse{
-		ID:         bill.ID,
-		Status:     string(bill.Status),
-		ApprovedBy: approverID,
-		UpdatedAt:  bill.UpdatedAt,
-	}, nil
+	return resp, err
 }

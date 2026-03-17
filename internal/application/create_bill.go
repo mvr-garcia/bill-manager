@@ -38,47 +38,36 @@ func NewCreateBillUseCase(uow domain.UnitOfWork) *CreateBillUseCase {
 
 // Execute creates a new bill and logs the creation in the audit table.
 func (uc *CreateBillUseCase) Execute(ctx context.Context, req *CreateBillRequest, userID uuid.UUID, ipAddress, userAgent string) (*CreateBillResponse, error) {
-	// Start a transaction
-	if err := uc.uow.Begin(ctx); err != nil {
-		return nil, err
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			_ = uc.uow.Rollback(ctx)
-			panic(r)
+	var resp *CreateBillResponse
+
+	err := uc.uow.Execute(func(uow domain.UnitOfWork) error {
+		// Create the bill entity
+		bill := domain.NewBill(req.Description, req.Amount, req.DueDate, userID)
+
+		// Persist the bill
+		billRepo := uow.BillRepository()
+		if err := billRepo.Create(ctx, bill); err != nil {
+			return err
 		}
-	}()
 
-	// Create the bill entity
-	bill := domain.NewBill(req.Description, req.Amount, req.DueDate, userID)
+		// Create and persist the audit log
+		audit := domain.NewBillAudit(bill.ID, domain.AuditActionCreated, userID, ipAddress, userAgent)
+		auditRepo := uow.BillAuditRepository()
+		if err := auditRepo.Create(ctx, audit); err != nil {
+			return err
+		}
 
-	// Persist the bill
-	billRepo := uc.uow.BillRepository()
-	if err := billRepo.Create(ctx, bill); err != nil {
-		_ = uc.uow.Rollback(ctx)
-		return nil, err
-	}
+		resp = &CreateBillResponse{
+			ID:          bill.ID,
+			Description: bill.Description,
+			Amount:      bill.Amount,
+			DueDate:     bill.DueDate,
+			Status:      string(bill.Status),
+			CreatedBy:   bill.CreatedBy,
+			CreatedAt:   bill.CreatedAt,
+		}
+		return nil
+	})
 
-	// Create and persist the audit log
-	audit := domain.NewBillAudit(bill.ID, domain.AuditActionCreated, userID, ipAddress, userAgent)
-	auditRepo := uc.uow.BillAuditRepository()
-	if err := auditRepo.Create(ctx, audit); err != nil {
-		_ = uc.uow.Rollback(ctx)
-		return nil, err
-	}
-
-	// Commit the transaction
-	if err := uc.uow.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	return &CreateBillResponse{
-		ID:          bill.ID,
-		Description: bill.Description,
-		Amount:      bill.Amount,
-		DueDate:     bill.DueDate,
-		Status:      string(bill.Status),
-		CreatedBy:   bill.CreatedBy,
-		CreatedAt:   bill.CreatedAt,
-	}, nil
+	return resp, err
 }
